@@ -1,7 +1,10 @@
 from flask import Flask, request, jsonify, g
 import sqlite3
 import os
+from dotenv import load_dotenv
 
+
+load_dotenv()
 app = Flask(__name__)
 DATABASE = os.getenv("DATABASE_PATH", "clinic.db")
 API_KEY = os.getenv("API_KEY")
