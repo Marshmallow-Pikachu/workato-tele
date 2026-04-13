@@ -197,6 +197,20 @@ def get_patient_by_telegram(telegram_chat_id):
     return jsonify(row_to_dict(row))
 
 
+@app.route("/consults", methods=["GET"])
+def get_all_consults():
+    auth = require_api_key()
+    if auth:
+        return auth
+
+    db = get_db()
+    rows = db.execute("""
+        SELECT * FROM Consults
+        ORDER BY consult_date DESC, consult_id DESC
+    """).fetchall()
+    return jsonify([row_to_dict(r) for r in rows])
+
+
 @app.route("/consults", methods=["POST"])
 def create_consult():
     auth = require_api_key()
@@ -349,6 +363,20 @@ def update_additional_attending_instructions(consult_id):
         "message": "additional_attending_instructions updated",
         "consult": row_to_dict(row)
     })
+
+
+@app.route("/responses", methods=["GET"])
+def get_all_responses():
+    auth = require_api_key()
+    if auth:
+        return auth
+
+    db = get_db()
+    rows = db.execute("""
+        SELECT * FROM Responses
+        ORDER BY response_date DESC, response_id DESC
+    """).fetchall()
+    return jsonify([row_to_dict(r) for r in rows])
 
 
 @app.route("/responses", methods=["POST"])
