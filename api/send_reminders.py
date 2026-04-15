@@ -2,7 +2,6 @@ import os
 import requests
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -25,6 +24,9 @@ def api_get(path):
 
 
 def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
+
     resp = api_get("/patients")
     resp.raise_for_status()
     patients = resp.json()
@@ -34,20 +36,22 @@ def main():
         if not chat_id:
             continue
 
-        tg_send(chat_id, (
-            f"Hi {p.get('patient_name','')}, reminder to submit your exercise response today.\n\n"
-            "Reply in this format:\n"
-            "adherence: 1-5\n"
-            "difficulty_level: 1-5\n"
-            "pain_level: 0-10\n"
-            "progress_perception: Better/Same/Worse\n"
-            "non_compliance: (optional)\n"
-            "issues: (optional)\n"
-            "notes: (optional)"
-        ))
+        tg_send(
+            chat_id,
+            (
+                f"Hi {p.get('patient_name','')}, reminder to submit your exercise "
+                "response today.\n\n"
+                "Reply in this format:\n"
+                "adherence: 1-5\n"
+                "difficulty_level: 1-5\n"
+                "pain_level: 0-10\n"
+                "progress_perception: Better/Same/Worse\n"
+                "non_compliance: (optional)\n"
+                "issues: (optional)\n"
+                "notes: (optional)"
+            ),
+        )
 
 
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
     main()

@@ -3,6 +3,8 @@ import sqlite3
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from send_reminders import main as send_reminders_main
+
 
 load_dotenv()
 
@@ -521,6 +523,21 @@ def get_patient_responses_by_week(patient_id):
         "end_date": end_date.strftime("%Y-%m-%d"),
         "responses": [row_to_dict(r) for r in rows]
     })
+
+
+@app.route("/internal/send-reminders", methods=["POST"])
+def trigger_send_reminders():
+    auth = require_api_key()
+    if auth:
+        return auth
+
+    try:
+        send_reminders_main()
+    except Exception as exc:
+        # Optional: log exc
+        return jsonify({"error": "Failed to send reminders", "detail": str(exc)}), 500
+
+    return jsonify({"message": "Reminders sent"}), 200
 
 
 if __name__ == "__main__":

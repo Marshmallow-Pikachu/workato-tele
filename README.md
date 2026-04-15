@@ -615,3 +615,38 @@ or
 { "error": "Consult not found" }
 ```
 
+---
+
+## Internal utilities
+
+### `POST /internal/send-reminders`
+
+Trigger Telegram **exercise reminder messages** to all patients who have a `telegram_chat_id` set. This endpoint simply calls the `send_reminders.main()` function from `send_reminders.py` on the server. [file:51]
+
+- Requires `X-API-KEY`. [file:47]  
+- Expects `TELEGRAM_BOT_TOKEN`, `API_BASE_URL`, and `API_KEY` to be correctly set in the environment for `send_reminders.py`. [file:51]  
+- Fetches patients from `GET /patients`, then sends a Telegram message to each with a valid `telegram_chat_id`. [file:51]
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:5000/internal/send-reminders \
+  -H "X-API-KEY: your-secret-key"
+```
+
+Successful response:
+
+```json
+{
+  "message": "Reminders sent"
+}
+```
+
+On failure (e.g. missing bot token or network error), the endpoint returns `500` with a JSON body like:
+
+```json
+{
+  "error": "Failed to send reminders",
+  "detail": "error details here"
+}
+```
