@@ -1,19 +1,19 @@
 # Clinic API
 
-Flask + SQLite API for managing **patients**, **consults**, and **responses**, designed to be called from internal tools and a Telegram bot.
+Flask + SQLite API for managing **patients**, **consults**, and **responses**, designed to be called from internal tools and a Telegram bot. 
 
 ## Features
 
-- Patients with optional Telegram chat linking.  
-- Consults with attending information and separate raw / AI / additional instructions.  
-- Responses with adherence, pain, and subjective progress, queryable by patient and time window.  
-- Simple API key protection for write and sensitive routes.
+- Patients with optional Telegram chat linking.   
+- Consults with **patient name auto-filled**, and flexible raw/AI/additional instructions.   
+- Responses tracking adherence, pain, and subjective progress, queryable globally or per patient and by week.   
+- Simple API key protection for write and sensitive routes. 
 
 ## Tech stack
 
 - Python, Flask  
 - SQLite (`sqlite3`)  
-- `python-dotenv` for configuration
+- `python-dotenv` for configuration 
 
 ---
 
@@ -35,9 +35,9 @@ INTERNAL_API_KEY=your-secret-key
 PORT=5000
 ```
 
-- `DATABASE_PATH`: path to the SQLite file.  
-- `INTERNAL_API_KEY`: shared secret for internal services and the Telegram bot.  
-- `PORT`: port for the Flask server.
+- `DATABASE_PATH`: path to the SQLite file.   
+- `INTERNAL_API_KEY`: shared secret for internal services and the Telegram bot.   
+- `PORT`: port for the Flask server. 
 
 ### 3. Run the API
 
@@ -45,17 +45,17 @@ PORT=5000
 python app.py
 ```
 
-Server runs on `http://0.0.0.0:PORT` (default `5000`).
+Server runs on `http://0.0.0.0:PORT` (default `5000`). 
 
 ---
 
 ## Authentication
 
-Write and sensitive endpoints require an internal key:
+Write and sensitive endpoints use a simple API key:
 
-- Header: `X-API-KEY: <INTERNAL_API_KEY>`
+- Header: `X-API-KEY: <INTERNAL_API_KEY>` 
 
-If `INTERNAL_API_KEY` is omitted in the environment, the API key check is effectively disabled and endpoints behave as open.
+If `INTERNAL_API_KEY` is not set, the key check is disabled and endpoints behave as open. 
 
 Example:
 
@@ -70,7 +70,17 @@ curl http://127.0.0.1:5000/patients \
 
 ## Database schema
 
+Created in `init_db()` inside `app.py`. 
+
 ### Patients
+
+```sql
+CREATE TABLE IF NOT EXISTS Patients (
+    patient_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_name TEXT NOT NULL,
+    telegram_chat_id TEXT
+);
+```
 
 | Column             | Type    | Notes                          |
 |--------------------|---------|--------------------------------|
@@ -78,37 +88,90 @@ curl http://127.0.0.1:5000/patients \
 | `patient_name`     | TEXT    | Required                       |
 | `telegram_chat_id` | TEXT    | Nullable; used by Telegram bot |
 
+
+
 ### Consults
 
-| Column                             | Type    | Notes                                           |
-|------------------------------------|---------|-------------------------------------------------|
-| `consult_id`                       | INTEGER | PK, autoincrement                               |
-| `patient_id`                       | INTEGER | FK → Patients.patient_id                        |
-| `patient_name`                     | TEXT    | Snapshot of patient name at consult time        |
-| `attending_id`                     | INTEGER | Required                                        |
-| `attending_name`                   | TEXT    | Required                                        |
-| `consult_date`                     | TEXT    | Default: now (localtime)                        |
-| `raw_attending_instructions`       | TEXT    | Required, original instructions                 |
-| `ai_attending_instructions`        | TEXT    | Nullable, set later by AI                       |
-| `additional_attending_instructions`| TEXT    | Nullable, extra human edits                     |
+```sql
+CREATE TABLE IF NOT EXISTS Consults (
+    consult_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id INTEGER NOT NULL,
+    patient_name TEXT NOT NULL,
+    attending_name TEXT NOT NULL,
+    consult_date TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    raw_attending_instructions TEXT,
+    ai_attending_instructions TEXT,
+    additional_attending_instructions TEXT,
+    FOREIGN KEY (patient_id) REFERENCES Patients(patient_id) ON DELETE CASCADE
+);
+```
+
+| Column                             | Type    | Notes                                                   |
+|------------------------------------|---------|---------------------------------------------------------|
+| `consult_id`                       | INTEGER | PK, autoincrement                                       |
+| `patient_id`                       | INTEGER | FK → Patients.patient_id                                |
+| `patient_name`                     | TEXT    | Snapshot of patient name, auto‑loaded from Patients     |
+| `attending_name`                   | TEXT    | Required                                                |
+| `consult_date`                     | TEXT    | Default: now (localtime)                                |
+| `raw_attending_instructions`       | TEXT    | Optional                                                |
+| `ai_attending_instructions`        | TEXT    | Optional (set by AI or later edits)                     |
+| `additional_attending_instructions`| TEXT    | Optional (extra human notes/overrides)                  |
+
+
 
 ### Responses
 
+```sql
+CREATE TABLE IF NOT EXISTS Responses (
+    response_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id INTEGER NOT NULL,
+    consult_id INTEGER,
+    response_date TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    adherence INTEGER NOT NULL CHECK (adherence BETWEEN 1 AND 5),
+    non_compliance TEXT,
+    difficulty_level INTEGER NOT NULL CHECK (difficulty_level BETWEEN 1 AND 5),
+    pain_level INTEGER NOT NULL CHECK (pain_level BETWEEN 0 AND 10),
+    progress_perception TEXT NOT NULL,
+    issues TEXT,
+    notes TEXT,
+    FOREIGN KEY (patient_id) REFERENCES Patients(patient_id) ON DELETE CASCADE,
+    FOREIGN KEY (consult_id) REFERENCES Consults(consult_id) ON DELETE SET NULL
+);
+```
+
 | Column               | Type    | Notes                                  |
 |----------------------|---------|----------------------------------------|
-| `response_id`        | INTEGER | PK, autoincrement                     |
-| `patient_id`         | INTEGER | FK → Patients.patient_id              |
-| `consult_id`         | INTEGER | Nullable FK → Consults.consult_id     |
-| `response_date`      | TEXT    | Default: now (localtime)              |
-| `adherence`          | INTEGER | 1–5                                   |
+| `response_id`        | INTEGER | PK, autoincrement                      |
+| `patient_id`         | INTEGER | FK → Patients.patient_id               |
+| `consult_id`         | INTEGER | Nullable FK → Consults.consult_id      |
+| `response_date`      | TEXT    | Default: now (localtime)               |
+| `adherence`          | INTEGER | 1–5                                    |
 | `non_compliance`     | TEXT    | Optional                               |
-| `difficulty_level`   | INTEGER | 1–5                                   |
-| `pain_level`         | INTEGER | 0–10                                  |
+| `difficulty_level`   | INTEGER | 1–5                                    |
+| `pain_level`         | INTEGER | 0–10                                   |
 | `progress_perception`| TEXT    | Required                               |
 | `issues`             | TEXT    | Optional                               |
 | `notes`              | TEXT    | Optional                               |
 
-> Note: If you are migrating from a previous schema (with `raw_input`, `exercise`, `sets`, `reps`, `frequency`, `instructions`), you must create a **new database** or write a migration script; `CREATE TABLE IF NOT EXISTS` will not alter existing tables.
+
+
+> Note: If you previously had a different `Consults` schema (with `attending_id`, `raw_input`, `exercise`, etc.), you must create a **new database** or write a migration. `CREATE TABLE IF NOT EXISTS` will not change existing tables. 
+
+---
+
+## Seeding
+
+Use `seed_db.py` to seed **10 patients**, **20 consults**, and **70 responses** matching this schema. [file:48]
+
+```bash
+python seed_db.py
+```
+
+The seeder:
+
+- Inserts 10 patients (first 6 with Telegram IDs). [file:48]  
+- Inserts 20 consults with random `attending_name` and optional instruction fields. [file:48]  
+- Inserts 70 responses, tied to consults when possible with realistic dates. [file:48]
 
 ---
 
@@ -120,13 +183,15 @@ Base URL: `http://<host>:<port>`
 
 #### `GET /health`
 
-Simple healthcheck.
+Healthcheck.
 
 Response:
 
 ```json
 { "status": "ok" }
 ```
+
+
 
 ---
 
@@ -140,15 +205,25 @@ List all patients (newest first).
 curl http://127.0.0.1:5000/patients
 ```
 
+
+
 ---
 
 ### `GET /patients/<patient_id>`
 
-Get one patient by ID.
+Get a single patient.
 
 ```bash
 curl http://127.0.0.1:5000/patients/1
 ```
+
+Response 404:
+
+```json
+{ "error": "Patient not found" }
+```
+
+
 
 ---
 
@@ -156,8 +231,7 @@ curl http://127.0.0.1:5000/patients/1
 
 Create a patient.
 
-- Requires `X-API-KEY`.
-- Body: JSON.
+- Requires `X-API-KEY`. 
 
 Body:
 
@@ -177,13 +251,15 @@ Response:
 }
 ```
 
+
+
 ---
 
 ### `PATCH /patients/<patient_id>/link-telegram` (also accepts POST)
 
 Link or update a patient’s Telegram chat.
 
-- Requires `X-API-KEY`.
+- Requires `X-API-KEY`.   
 - Used by the Telegram bot `/start <patient_id>` flow.
 
 Body:
@@ -204,13 +280,15 @@ Response:
 }
 ```
 
+
+
 ---
 
 ### `GET /patients/by-telegram/<telegram_chat_id>`
 
 Look up a patient by Telegram chat ID.
 
-- Requires `X-API-KEY`.
+- Requires `X-API-KEY`. 
 
 ```bash
 curl http://127.0.0.1:5000/patients/by-telegram/123456789 \
@@ -227,55 +305,24 @@ Response:
 }
 ```
 
+
+
 ---
 
 ## Consults
 
-### `POST /consults`
+### `GET /consults`
 
-Create a consult.
+List **all consults**.
 
-- Requires `X-API-KEY`.
-- Validates that `patient_id` exists.
-
-Required fields:
-
-- `patient_id`
-- `attending_id`
-- `attending_name`
-- `raw_attending_instructions`
-
-Optional:
-
-- `patient_name` (defaults to current patient name)
-- `consult_date`
-- `ai_attending_instructions`
-- `additional_attending_instructions`
-
-Example:
+- Requires `X-API-KEY`. 
 
 ```bash
-curl -X POST http://127.0.0.1:5000/consults \
-  -H "Content-Type: application/json" \
-  -H "X-API-KEY: your-secret-key" \
-  -d '{
-    "patient_id": 1,
-    "attending_id": 10,
-    "attending_name": "Dr Lee",
-    "raw_attending_instructions": "Perform mobility exercises twice daily",
-    "ai_attending_instructions": null,
-    "additional_attending_instructions": null
-  }'
+curl http://127.0.0.1:5000/consults \
+  -H "X-API-KEY: your-secret-key"
 ```
 
-Response:
-
-```json
-{
-  "message": "Consult created",
-  "consult_id": 1
-}
-```
+Returns all rows from `Consults` ordered by `consult_date DESC, consult_id DESC`. 
 
 ---
 
@@ -287,65 +334,118 @@ Get a single consult.
 curl http://127.0.0.1:5000/consults/1
 ```
 
+Response 404:
+
+```json
+{ "error": "Consult not found" }
+```
+
+
+
 ---
 
 ### `GET /patients/<patient_id>/consults`
 
-Get all consults for a patient, latest first.
+List all consults for a given patient.
 
 ```bash
-curl http://127.0.0.1:5000/patients/1/consults
+curl http://127.0.0.1:5000/patients/1/consults \
+  -H "X-API-KEY: your-secret-key"
 ```
+
+Returns consults ordered by `consult_date DESC, consult_id DESC`. 
 
 ---
 
-### `PATCH /consults/<consult_id>/ai-attending-instructions`
+### `POST /consults`
 
-Update `ai_attending_instructions`.
+Create a consult (new behaviour).
 
-- Requires `X-API-KEY`.
+- Requires `X-API-KEY`.   
+- Required: `patient_id`, `attending_name`.  
+- Optional: `raw_attending_instructions`, `ai_attending_instructions`, `additional_attending_instructions`, `consult_date`.   
+- `patient_name` is automatically loaded from `Patients` by `patient_id`. 
 
 Body:
 
 ```json
 {
-  "ai_attending_instructions": "Summarised rehab plan generated by AI"
+  "patient_id": 1,
+  "attending_name": "Dr Lim",
+  "raw_attending_instructions": "Initial assessment, prescribe knee flexion exercises.",
+  "ai_attending_instructions": null,
+  "additional_attending_instructions": null
+}
+```
+
+Response:
+
+```json
+{
+  "message": "Consult created",
+  "consult_id": 1
+}
+```
+
+
+
+---
+
+### `PATCH /consults/<consult_id>/instructions`
+
+Update any combination of the three instruction fields.
+
+- Requires `X-API-KEY`.   
+- You can send one, two, or all three fields; unspecified ones are left unchanged.  
+- Passing `null` will clear a field. 
+
+Body (all three):
+
+```json
+{
+  "raw_attending_instructions": "Updated raw instructions",
+  "ai_attending_instructions": "Updated AI summary",
+  "additional_attending_instructions": "Updated extra notes"
+}
+```
+
+Body (one field):
+
+```json
+{
+  "ai_attending_instructions": "AI-only update"
 }
 ```
 
 Example:
 
 ```bash
-curl -X PATCH http://127.0.0.1:5000/consults/1/ai-attending-instructions \
+curl -X PATCH http://127.0.0.1:5000/consults/1/instructions \
   -H "Content-Type: application/json" \
   -H "X-API-KEY: your-secret-key" \
-  -d '{"ai_attending_instructions": "Summarised rehab plan generated by AI"}'
+  -d '{"ai_attending_instructions": "AI-only update"}'
 ```
 
----
-
-### `PATCH /consults/<consult_id>/additional-attending-instructions`
-
-Update `additional_attending_instructions`.
-
-- Requires `X-API-KEY`.
-
-Body:
+Response:
 
 ```json
 {
-  "additional_attending_instructions": "Avoid stairs for 3 days"
+  "message": "Consult instructions updated",
+  "consult": {
+    "...": "full consult row"
+  }
 }
 ```
 
-Example:
+If no instruction fields are provided:
 
-```bash
-curl -X PATCH http://127.0.0.1:5000/consults/1/additional-attending-instructions \
-  -H "Content-Type: application/json" \
-  -H "X-API-KEY: your-secret-key" \
-  -d '{"additional_attending_instructions": "Avoid stairs for 3 days"}'
+```json
+{
+  "error": "At least one of raw_attending_instructions, ai_attending_instructions, additional_attending_instructions must be provided"
+}
 ```
+
+
 
 ---
 
@@ -353,12 +453,12 @@ curl -X PATCH http://127.0.0.1:5000/consults/1/additional-attending-instructions
 
 ### `POST /responses`
 
-Create a response (e.g., from the Telegram bot).
+Create a response.
 
-- Requires `X-API-KEY`.
-- Validates patient exists; if `consult_id` provided, validates consult exists.
+- Requires `X-API-KEY`.   
+- Validates `patient_id` exists; if `consult_id` provided, validates consult exists. 
 
-Required fields:
+Required:
 
 - `patient_id`
 - `adherence` (1–5)
@@ -402,44 +502,52 @@ Response:
 }
 ```
 
+
+
 ---
 
 ### `GET /responses`
 
-List all responses (latest first).
+List all responses.
 
-- Requires `X-API-KEY`.
+- Requires `X-API-KEY`. 
 
 ```bash
 curl http://127.0.0.1:5000/responses \
   -H "X-API-KEY: your-secret-key"
 ```
 
+Returns all rows ordered by `response_date DESC, response_id DESC`. 
+
 ---
 
 ### `GET /patients/<patient_id>/responses`
 
-List all responses for a given patient.
+List all responses for a specific patient.
 
-- Requires `X-API-KEY`.
+- Requires `X-API-KEY`. 
 
 ```bash
 curl http://127.0.0.1:5000/patients/1/responses \
   -H "X-API-KEY: your-secret-key"
 ```
 
+
+
 ---
 
 ### `GET /patients/<patient_id>/responses/weekly`
 
-List responses for the last 7 days.
+List responses from the last 7 days for a patient.
 
-- Requires `X-API-KEY`.
+- Requires `X-API-KEY`. 
 
 ```bash
 curl http://127.0.0.1:5000/patients/1/responses/weekly \
   -H "X-API-KEY: your-secret-key"
 ```
+
+
 
 ---
 
@@ -447,13 +555,13 @@ curl http://127.0.0.1:5000/patients/1/responses/weekly \
 
 List responses in a 7‑day window ending on `end_date` (inclusive).
 
-- Requires `X-API-KEY`.
-- `end_date` format: `YYYY-MM-DD`.
+- Requires `X-API-KEY`.   
+- `end_date` must be `YYYY-MM-DD`. 
 
 Example:
 
 ```bash
-curl "http://127.0.0.1:5000/patients/1/responses/by-week?end_date=2026-04-13" \
+curl "http://127.0.0.1:5000/patients/1/responses/by-week?end_date=2026-04-15" \
   -H "X-API-KEY: your-secret-key"
 ```
 
@@ -462,25 +570,15 @@ Response:
 ```json
 {
   "patient_id": 1,
-  "start_date": "2026-04-07",
-  "end_date": "2026-04-13",
+  "start_date": "2026-04-09",
+  "end_date": "2026-04-15",
   "responses": [
-    {
-      "response_id": 1,
-      "patient_id": 1,
-      "consult_id": 1,
-      "response_date": "2026-04-13 09:00:00",
-      "adherence": 4,
-      "non_compliance": "Missed one session",
-      "difficulty_level": 2,
-      "pain_level": 1,
-      "progress_perception": "Better",
-      "issues": "Mild stiffness",
-      "notes": "Feels improved overall"
-    }
+    { "...": "response rows" }
   ]
 }
 ```
+
+
 
 ---
 
@@ -492,6 +590,8 @@ Response:
 { "error": "Unauthorized" }
 ```
 
+
+
 - Missing required fields:
 
 ```json
@@ -501,8 +601,17 @@ Response:
 }
 ```
 
+
+
 - Resource not found:
 
 ```json
 { "error": "Patient not found" }
 ```
+
+or
+
+```json
+{ "error": "Consult not found" }
+```
+
