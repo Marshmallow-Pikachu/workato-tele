@@ -60,17 +60,16 @@ def init_db():
 
     db.execute("""
     CREATE TABLE IF NOT EXISTS Consults (
-        consult_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        patient_id INTEGER NOT NULL,
-        patient_name TEXT NOT NULL,
-        attending_id INTEGER NOT NULL,
-        attending_name TEXT NOT NULL,
-        consult_date TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-        raw_attending_instructions TEXT NOT NULL,
-        ai_attending_instructions TEXT,
-        additional_attending_instructions TEXT,
-        FOREIGN KEY (patient_id) REFERENCES Patients(patient_id) ON DELETE CASCADE
-    )
+    consult_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    patient_id INTEGER NOT NULL,
+    patient_name TEXT NOT NULL,
+    attending_name TEXT NOT NULL,
+    consult_date TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    raw_attending_instructions TEXT,
+    ai_attending_instructions TEXT,
+    additional_attending_instructions TEXT,
+    FOREIGN KEY (patient_id) REFERENCES Patients(patient_id) ON DELETE CASCADE
+    );
     """)
 
     db.execute("""
@@ -221,54 +220,65 @@ def create_consult():
         return jsonify({"error": "Content-Type must be application/json"}), 415
 
     data = request.get_json() or {}
-    required = [
-        "patient_id",
-        "attending_id",
-        "attending_name",
-        "raw_attending_instructions"
-    ]
-    missing = [k for k in required if data.get(k) in (None, "")]
-    if missing:
-        return jsonify({"error": "Missing required fields", "missing": missing}), 400
+
+    # Required fields
+    patient_id = data.get("patient_id")
+    attending_name = data.get("attending_name")
+
+    if not patient_id:
+        return jsonify({"error": "patient_id is required"}), 400
+    if not attending_name or not str(attending_name).strip():
+        return jsonify({"error": "attending_name is required"}), 400
 
     db = get_db()
+
+    # Load patient_name from Patients table
     patient = db.execute(
         "SELECT patient_id, patient_name FROM Patients WHERE patient_id = ?",
-        (int(data["patient_id"]),)
+        (int(patient_id),),
     ).fetchone()
 
     if patient is None:
         return jsonify({"error": "Patient not found"}), 404
 
-    patient_name = str(data.get("patient_name") or patient["patient_name"]).strip()
+    patient_name = patient["patient_name"]
 
-    cur = db.execute("""
+    raw_instr = data.get("raw_attending_instructions")
+    ai_instr = data.get("ai_attending_instructions")
+    add_instr = data.get("additional_attending_instructions")
+    consult_date = data.get("consult_date")  # optional
+
+    cur = db.execute(
+        """
         INSERT INTO Consults (
             patient_id,
             patient_name,
-            attending_id,
             attending_name,
             consult_date,
             raw_attending_instructions,
             ai_attending_instructions,
             additional_attending_instructions
         )
-        VALUES (?, ?, ?, ?, COALESCE(?, datetime('now', 'localtime')), ?, ?, ?)
-    """, (
-        int(data["patient_id"]),
-        patient_name,
-        int(data["attending_id"]),
-        str(data["attending_name"]).strip(),
-        data.get("consult_date"),
-        str(data["raw_attending_instructions"]).strip(),
-        (str(data["ai_attending_instructions"]).strip()
-         if data.get("ai_attending_instructions") is not None else None),
-        (str(data["additional_attending_instructions"]).strip()
-         if data.get("additional_attending_instructions") is not None else None),
-    ))
+        VALUES (?, ?, ?, COALESCE(?, datetime('now', 'localtime')), ?, ?, ?)
+        """,
+        (
+            int(patient_id),
+            patient_name,
+            str(attending_name).strip(),
+            consult_date,
+            (str(raw_instr).strip() if raw_instr is not None else None),
+            (str(ai_instr).strip() if ai_instr is not None else None),
+            (str(add_instr).strip() if add_instr is not None else None),
+        ),
+    )
     db.commit()
 
-    return jsonify({"message": "Consult created", "consult_id": cur.lastrowid}), 201
+    return jsonify(
+        {
+            "message": "Consult created",
+            "consult_id": cur.lastrowid,
+        }
+    ), 201
 
 
 @app.route("/consults/<int:consult_id>", methods=["GET"])
@@ -291,8 +301,8 @@ def get_patient_consults(patient_id):
     return jsonify([row_to_dict(r) for r in rows])
 
 
-@app.route("/consults/<int:consult_id>/ai-attending-instructions", methods=["PATCH"])
-def update_ai_attending_instructions(consult_id):
+@app.route("/consults/<int:consult_id>/instructions", methods=["PATCH"])
+def update_consult_instructions(consult_id):
     auth = require_api_key()
     if auth:
         return auth
@@ -301,82 +311,64 @@ def update_ai_attending_instructions(consult_id):
         return jsonify({"error": "Content-Type must be application/json"}), 415
 
     data = request.get_json() or {}
-    if "ai_attending_instructions" not in data:
-        return jsonify({"error": "ai_attending_instructions is required"}), 400
 
-    value = data.get("ai_attending_instructions")
-    value = None if value is None else str(value).strip()
+    # Allow partial update – at least one of the 3 keys should be present
+    keys = {
+        "raw_attending_instructions": "raw_attending_instructions",
+        "ai_attending_instructions": "ai_attending_instructions",
+        "additional_attending_instructions": "additional_attending_instructions",
+    }
+
+    fields_to_update = {}
+    for body_key, column_name in keys.items():
+        if body_key in data:
+            val = data.get(body_key)
+            # allow explicit null to clear field
+            fields_to_update[column_name] = (
+                None if val is None else str(val).strip()
+            )
+
+    if not fields_to_update:
+        return jsonify(
+            {
+                "error": "At least one of "
+                "raw_attending_instructions, "
+                "ai_attending_instructions, "
+                "additional_attending_instructions must be provided"
+            }
+        ), 400
 
     db = get_db()
+
     existing = db.execute(
         "SELECT consult_id FROM Consults WHERE consult_id = ?",
-        (consult_id,)
+        (consult_id,),
     ).fetchone()
     if existing is None:
         return jsonify({"error": "Consult not found"}), 404
 
+    # Build dynamic UPDATE query
+    set_clause = ", ".join(f"{col} = ?" for col in fields_to_update.keys())
+    values = list(fields_to_update.values())
+    values.append(consult_id)
+
     db.execute(
-        "UPDATE Consults SET ai_attending_instructions = ? WHERE consult_id = ?",
-        (value, consult_id)
+        f"UPDATE Consults SET {set_clause} WHERE consult_id = ?",
+        tuple(values),
     )
     db.commit()
 
-    row = db.execute("SELECT * FROM Consults WHERE consult_id = ?", (consult_id,)).fetchone()
-    return jsonify({
-        "message": "ai_attending_instructions updated",
-        "consult": row_to_dict(row)
-    })
-
-
-@app.route("/consults/<int:consult_id>/additional-attending-instructions", methods=["PATCH"])
-def update_additional_attending_instructions(consult_id):
-    auth = require_api_key()
-    if auth:
-        return auth
-
-    if not request.is_json:
-        return jsonify({"error": "Content-Type must be application/json"}), 415
-
-    data = request.get_json() or {}
-    if "additional_attending_instructions" not in data:
-        return jsonify({"error": "additional_attending_instructions is required"}), 400
-
-    value = data.get("additional_attending_instructions")
-    value = None if value is None else str(value).strip()
-
-    db = get_db()
-    existing = db.execute(
-        "SELECT consult_id FROM Consults WHERE consult_id = ?",
-        (consult_id,)
+    row = db.execute(
+        "SELECT * FROM Consults WHERE consult_id = ?",
+        (consult_id,),
     ).fetchone()
-    if existing is None:
-        return jsonify({"error": "Consult not found"}), 404
 
-    db.execute(
-        "UPDATE Consults SET additional_attending_instructions = ? WHERE consult_id = ?",
-        (value, consult_id)
+    return jsonify(
+        {
+            "message": "Consult instructions updated",
+            "consult": row_to_dict(row),
+        }
     )
-    db.commit()
-
-    row = db.execute("SELECT * FROM Consults WHERE consult_id = ?", (consult_id,)).fetchone()
-    return jsonify({
-        "message": "additional_attending_instructions updated",
-        "consult": row_to_dict(row)
-    })
-
-
-@app.route("/responses", methods=["GET"])
-def get_all_responses():
-    auth = require_api_key()
-    if auth:
-        return auth
-
-    db = get_db()
-    rows = db.execute("""
-        SELECT * FROM Responses
-        ORDER BY response_date DESC, response_id DESC
-    """).fetchall()
-    return jsonify([row_to_dict(r) for r in rows])
 
 
 @app.route("/responses", methods=["POST"])
