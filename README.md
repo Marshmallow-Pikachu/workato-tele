@@ -1,652 +1,1246 @@
-# Clinic API
+# Clinic Telegram API README
 
-Flask + SQLite API for managing **patients**, **consults**, and **responses**, designed to be called from internal tools and a Telegram bot. 
+A Flask API for managing patients, consults, exercise responses, and Telegram-based reminder or instruction workflows. The API supports patient management, consult records, weekly response submission, and internal endpoints that trigger Telegram sends for reminders and exercise instructions. [file:2][file:3]
 
-## Features
+## Base URL
 
-- Patients with optional Telegram chat linking.   
-- Consults with **patient name auto-filled**, and flexible raw/AI/additional instructions.   
-- Responses tracking adherence, pain, and subjective progress, queryable globally or per patient and by week.   
-- Simple API key protection for write and sensitive routes. 
-
-## Tech stack
-
-- Python, Flask  
-- SQLite (`sqlite3`)  
-- `python-dotenv` for configuration 
-
----
-
-## Environment & setup
-
-### 1. Install dependencies
-
-```bash
-pip install flask python-dotenv requests
+```text
+http://<host>:<port>
 ```
 
-### 2. Environment variables
+Example:
 
-Create a `.env` in the same folder as `app.py`:
-
-```env
-DATABASE_PATH=clinic.db
-INTERNAL_API_KEY=your-secret-key
-PORT=5000
+```text
+http://127.0.0.1:5000
 ```
-
-- `DATABASE_PATH`: path to the SQLite file.   
-- `INTERNAL_API_KEY`: shared secret for internal services and the Telegram bot.   
-- `PORT`: port for the Flask server. 
-
-### 3. Run the API
-
-```bash
-python app.py
-```
-
-Server runs on `http://0.0.0.0:PORT` (default `5000`). 
-
----
 
 ## Authentication
 
-Write and sensitive endpoints use a simple API key:
+Public endpoints do not require authentication, while protected endpoints require the `X-API-KEY` request header. In the Flask app, protected routes compare `X-API-KEY` against `INTERNAL_API_KEY` or `API_KEY` from the environment. [file:2]
 
-- Header: `X-API-KEY: <INTERNAL_API_KEY>` 
+### Protected request headers
 
-If `INTERNAL_API_KEY` is not set, the key check is disabled and endpoints behave as open. 
-
-Example:
-
-```bash
-curl http://127.0.0.1:5000/patients \
-  -H "Content-Type: application/json" \
-  -H "X-API-KEY: your-secret-key" \
-  -d '{"patient_name": "John Tan"}'
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
 ```
 
----
+For `GET` requests without a JSON body, `Content-Type` is optional, but `X-API-KEY` is still required on protected endpoints. [file:2]
 
-## Database schema
+## Common error response patterns
 
-Created in `init_db()` inside `app.py`. 
+Most unsuccessful responses in the API follow these JSON structures. The exact message varies by endpoint, but the shape is consistent across the route handlers. [file:2]
 
-### Patients
+### Unauthorized
 
-```sql
-CREATE TABLE IF NOT EXISTS Patients (
-    patient_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    patient_name TEXT NOT NULL,
-    telegram_chat_id TEXT
-);
-```
-
-| Column             | Type    | Notes                          |
-|--------------------|---------|--------------------------------|
-| `patient_id`       | INTEGER | PK, autoincrement              |
-| `patient_name`     | TEXT    | Required                       |
-| `telegram_chat_id` | TEXT    | Nullable; used by Telegram bot |
-
-
-
-### Consults
-
-```sql
-CREATE TABLE IF NOT EXISTS Consults (
-    consult_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    patient_id INTEGER NOT NULL,
-    patient_name TEXT NOT NULL,
-    attending_name TEXT NOT NULL,
-    consult_date TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    raw_attending_instructions TEXT,
-    ai_attending_instructions TEXT,
-    additional_attending_instructions TEXT,
-    FOREIGN KEY (patient_id) REFERENCES Patients(patient_id) ON DELETE CASCADE
-);
-```
-
-| Column                             | Type    | Notes                                                   |
-|------------------------------------|---------|---------------------------------------------------------|
-| `consult_id`                       | INTEGER | PK, autoincrement                                       |
-| `patient_id`                       | INTEGER | FK → Patients.patient_id                                |
-| `patient_name`                     | TEXT    | Snapshot of patient name, auto‑loaded from Patients     |
-| `attending_name`                   | TEXT    | Required                                                |
-| `consult_date`                     | TEXT    | Default: now (localtime)                                |
-| `raw_attending_instructions`       | TEXT    | Optional                                                |
-| `ai_attending_instructions`        | TEXT    | Optional (set by AI or later edits)                     |
-| `additional_attending_instructions`| TEXT    | Optional (extra human notes/overrides)                  |
-
-
-
-### Responses
-
-```sql
-CREATE TABLE IF NOT EXISTS Responses (
-    response_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    patient_id INTEGER NOT NULL,
-    consult_id INTEGER,
-    response_date TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    adherence INTEGER NOT NULL CHECK (adherence BETWEEN 1 AND 5),
-    non_compliance TEXT,
-    difficulty_level INTEGER NOT NULL CHECK (difficulty_level BETWEEN 1 AND 5),
-    pain_level INTEGER NOT NULL CHECK (pain_level BETWEEN 0 AND 10),
-    progress_perception TEXT NOT NULL,
-    issues TEXT,
-    notes TEXT,
-    FOREIGN KEY (patient_id) REFERENCES Patients(patient_id) ON DELETE CASCADE,
-    FOREIGN KEY (consult_id) REFERENCES Consults(consult_id) ON DELETE SET NULL
-);
-```
-
-| Column               | Type    | Notes                                  |
-|----------------------|---------|----------------------------------------|
-| `response_id`        | INTEGER | PK, autoincrement                      |
-| `patient_id`         | INTEGER | FK → Patients.patient_id               |
-| `consult_id`         | INTEGER | Nullable FK → Consults.consult_id      |
-| `response_date`      | TEXT    | Default: now (localtime)               |
-| `adherence`          | INTEGER | 1–5                                    |
-| `non_compliance`     | TEXT    | Optional                               |
-| `difficulty_level`   | INTEGER | 1–5                                    |
-| `pain_level`         | INTEGER | 0–10                                   |
-| `progress_perception`| TEXT    | Required                               |
-| `issues`             | TEXT    | Optional                               |
-| `notes`              | TEXT    | Optional                               |
-
-
-
-> Note: If you previously had a different `Consults` schema (with `attending_id`, `raw_input`, `exercise`, etc.), you must create a **new database** or write a migration. `CREATE TABLE IF NOT EXISTS` will not change existing tables. 
-
----
-
-## Seeding
-
-Use `seed_db.py` to seed **10 patients**, **20 consults**, and **70 responses** matching this schema. [file:48]
-
-```bash
-python seed_db.py
-```
-
-The seeder:
-
-- Inserts 10 patients (first 6 with Telegram IDs). [file:48]  
-- Inserts 20 consults with random `attending_name` and optional instruction fields. [file:48]  
-- Inserts 70 responses, tied to consults when possible with realistic dates. [file:48]
-
----
-
-## Endpoints
-
-Base URL: `http://<host>:<port>`
-
-### Health
-
-#### `GET /health`
-
-Healthcheck.
-
-Response:
-
-```json
-{ "status": "ok" }
-```
-
-
-
----
-
-## Patients
-
-### `GET /patients`
-
-List all patients (newest first).
-
-```bash
-curl http://127.0.0.1:5000/patients
-```
-
-
-
----
-
-### `GET /patients/<patient_id>`
-
-Get a single patient.
-
-```bash
-curl http://127.0.0.1:5000/patients/1
-```
-
-Response 404:
-
-```json
-{ "error": "Patient not found" }
-```
-
-
-
----
-
-### `POST /patients`
-
-Create a patient.
-
-- Requires `X-API-KEY`. 
-
-Body:
+Status: `401`
 
 ```json
 {
-  "patient_name": "John Tan",
-  "telegram_chat_id": "123456789"
+  "error": "Unauthorized"
 }
 ```
 
-Response:
+### Validation error
+
+Status: `400`
 
 ```json
 {
-  "message": "Patient created",
-  "patient_id": 1
+  "error": "patient_name is required"
 }
-```
-
-
-
----
-
-### `PATCH /patients/<patient_id>/link-telegram` (also accepts POST)
-
-Link or update a patient’s Telegram chat.
-
-- Requires `X-API-KEY`.   
-- Used by the Telegram bot `/start <patient_id>` flow.
-
-Body:
-
-```json
-{
-  "telegram_chat_id": "123456789"
-}
-```
-
-Response:
-
-```json
-{
-  "message": "Telegram chat updated",
-  "patient_id": 1,
-  "telegram_chat_id": "123456789"
-}
-```
-
-
-
----
-
-### `GET /patients/by-telegram/<telegram_chat_id>`
-
-Look up a patient by Telegram chat ID.
-
-- Requires `X-API-KEY`. 
-
-```bash
-curl http://127.0.0.1:5000/patients/by-telegram/123456789 \
-  -H "X-API-KEY: your-secret-key"
-```
-
-Response:
-
-```json
-{
-  "patient_id": 1,
-  "patient_name": "John Tan",
-  "telegram_chat_id": "123456789"
-}
-```
-
-
-
----
-
-## Consults
-
-### `GET /consults`
-
-List **all consults**.
-
-- Requires `X-API-KEY`. 
-
-```bash
-curl http://127.0.0.1:5000/consults \
-  -H "X-API-KEY: your-secret-key"
-```
-
-Returns all rows from `Consults` ordered by `consult_date DESC, consult_id DESC`. 
-
----
-
-### `GET /consults/<consult_id>`
-
-Get a single consult.
-
-```bash
-curl http://127.0.0.1:5000/consults/1
-```
-
-Response 404:
-
-```json
-{ "error": "Consult not found" }
-```
-
-
-
----
-
-### `GET /patients/<patient_id>/consults`
-
-List all consults for a given patient.
-
-```bash
-curl http://127.0.0.1:5000/patients/1/consults \
-  -H "X-API-KEY: your-secret-key"
-```
-
-Returns consults ordered by `consult_date DESC, consult_id DESC`. 
-
----
-
-### `POST /consults`
-
-Create a consult (new behaviour).
-
-- Requires `X-API-KEY`.   
-- Required: `patient_id`, `attending_name`.  
-- Optional: `raw_attending_instructions`, `ai_attending_instructions`, `additional_attending_instructions`, `consult_date`.   
-- `patient_name` is automatically loaded from `Patients` by `patient_id`. 
-
-Body:
-
-```json
-{
-  "patient_id": 1,
-  "attending_name": "Dr Lim",
-  "raw_attending_instructions": "Initial assessment, prescribe knee flexion exercises.",
-  "ai_attending_instructions": null,
-  "additional_attending_instructions": null
-}
-```
-
-Response:
-
-```json
-{
-  "message": "Consult created",
-  "consult_id": 1
-}
-```
-
-
-
----
-
-### `PATCH /consults/<consult_id>/instructions`
-
-Update any combination of the three instruction fields.
-
-- Requires `X-API-KEY`.   
-- You can send one, two, or all three fields; unspecified ones are left unchanged.  
-- Passing `null` will clear a field. 
-
-Body (all three):
-
-```json
-{
-  "raw_attending_instructions": "Updated raw instructions",
-  "ai_attending_instructions": "Updated AI summary",
-  "additional_attending_instructions": "Updated extra notes"
-}
-```
-
-Body (one field):
-
-```json
-{
-  "ai_attending_instructions": "AI-only update"
-}
-```
-
-Example:
-
-```bash
-curl -X PATCH http://127.0.0.1:5000/consults/1/instructions \
-  -H "Content-Type: application/json" \
-  -H "X-API-KEY: your-secret-key" \
-  -d '{"ai_attending_instructions": "AI-only update"}'
-```
-
-Response:
-
-```json
-{
-  "message": "Consult instructions updated",
-  "consult": {
-    "...": "full consult row"
-  }
-}
-```
-
-If no instruction fields are provided:
-
-```json
-{
-  "error": "At least one of raw_attending_instructions, ai_attending_instructions, additional_attending_instructions must be provided"
-}
-```
-
-
-
----
-
-## Responses
-
-### `POST /responses`
-
-Create a response.
-
-- Requires `X-API-KEY`.   
-- Validates `patient_id` exists; if `consult_id` provided, validates consult exists. 
-
-Required:
-
-- `patient_id`
-- `adherence` (1–5)
-- `difficulty_level` (1–5)
-- `pain_level` (0–10)
-- `progress_perception`
-
-Optional:
-
-- `consult_id`
-- `response_date`
-- `non_compliance`
-- `issues`
-- `notes`
-
-Example:
-
-```bash
-curl -X POST http://127.0.0.1:5000/responses \
-  -H "Content-Type: application/json" \
-  -H "X-API-KEY: your-secret-key" \
-  -d '{
-    "patient_id": 1,
-    "consult_id": 1,
-    "adherence": 4,
-    "difficulty_level": 2,
-    "pain_level": 1,
-    "progress_perception": "Better",
-    "non_compliance": "Missed one session",
-    "issues": "Mild stiffness",
-    "notes": "Feels improved overall"
-  }'
-```
-
-Response:
-
-```json
-{
-  "message": "Response created",
-  "response_id": 1
-}
-```
-
-
-
----
-
-### `GET /responses`
-
-List all responses.
-
-- Requires `X-API-KEY`. 
-
-```bash
-curl http://127.0.0.1:5000/responses \
-  -H "X-API-KEY: your-secret-key"
-```
-
-Returns all rows ordered by `response_date DESC, response_id DESC`. 
-
----
-
-### `GET /patients/<patient_id>/responses`
-
-List all responses for a specific patient.
-
-- Requires `X-API-KEY`. 
-
-```bash
-curl http://127.0.0.1:5000/patients/1/responses \
-  -H "X-API-KEY: your-secret-key"
-```
-
-
-
----
-
-### `GET /patients/<patient_id>/responses/weekly`
-
-List responses from the last 7 days for a patient.
-
-- Requires `X-API-KEY`. 
-
-```bash
-curl http://127.0.0.1:5000/patients/1/responses/weekly \
-  -H "X-API-KEY: your-secret-key"
-```
-
-
-
----
-
-### `GET /patients/<patient_id>/responses/by-week?end_date=YYYY-MM-DD`
-
-List responses in a 7‑day window ending on `end_date` (inclusive).
-
-- Requires `X-API-KEY`.   
-- `end_date` must be `YYYY-MM-DD`. 
-
-Example:
-
-```bash
-curl "http://127.0.0.1:5000/patients/1/responses/by-week?end_date=2026-04-15" \
-  -H "X-API-KEY: your-secret-key"
-```
-
-Response:
-
-```json
-{
-  "patient_id": 1,
-  "start_date": "2026-04-09",
-  "end_date": "2026-04-15",
-  "responses": [
-    { "...": "response rows" }
-  ]
-}
-```
-
-
-
----
-
-## Error responses
-
-- Wrong or missing API key (when configured):
-
-```json
-{ "error": "Unauthorized" }
-```
-
-
-
-- Missing required fields:
-
-```json
-{
-  "error": "Missing required fields",
-  "missing": ["adherence", "..."]
-}
-```
-
-
-
-- Resource not found:
-
-```json
-{ "error": "Patient not found" }
 ```
 
 or
 
 ```json
-{ "error": "Consult not found" }
-```
-
----
-
-## Internal utilities
-
-### `POST /internal/send-reminders`
-
-Trigger Telegram **exercise reminder messages** to all patients who have a `telegram_chat_id` set. This endpoint simply calls the `send_reminders.main()` function from `send_reminders.py` on the server. [file:51]
-
-- Requires `X-API-KEY`. [file:47]  
-- Expects `TELEGRAM_BOT_TOKEN`, `API_BASE_URL`, and `API_KEY` to be correctly set in the environment for `send_reminders.py`. [file:51]  
-- Fetches patients from `GET /patients`, then sends a Telegram message to each with a valid `telegram_chat_id`. [file:51]
-
-Example:
-
-```bash
-curl -X POST http://127.0.0.1:5000/internal/send-reminders \
-  -H "X-API-KEY: your-secret-key"
-```
-
-Successful response:
-
-```json
 {
-  "message": "Reminders sent"
+  "error": "Missing required fields",
+  "missing": ["patient_id", "adherence"]
 }
 ```
 
-On failure (e.g. missing bot token or network error), the endpoint returns `500` with a JSON body like:
+### Not found
+
+Status: `404`
 
 ```json
 {
-  "error": "Failed to send reminders",
-  "detail": "error details here"
+  "error": "Patient not found"
 }
 ```
+
+or
+
+```json
+{
+  "error": "Consult not found"
+}
+```
+
+### Unsupported media type
+
+Status: `415`
+
+```json
+{
+  "error": "Content-Type must be application/json"
+}
+```
+
+### Internal send failure
+
+Status: `500`
+
+```json
+{
+  "error": "Failed to send instructions",
+  "detail": "..."
+}
+```
+
+## Endpoints
+
+## Health
+
+### `GET /health`
+
+Checks whether the API is running. This endpoint is public and returns a simple health status object. [file:2]
+
+#### Request header
+
+None required.
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "status": "ok"
+}
+```
+
+#### Unsuccessful JSON response structure
+
+No custom unsuccessful response is defined for this route in the current handler. [file:2]
+
+## Patients
+
+### `GET /patients`
+
+Returns all patients ordered by `patient_id` descending. This endpoint is public in the cleaned route design. [file:2]
+
+#### Request header
+
+None required.
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+[
+  {
+    "patient_id": 3,
+    "patient_name": "John Tan",
+    "telegram_chat_id": "123456789"
+  },
+  {
+    "patient_id": 2,
+    "patient_name": "Mary Lim",
+    "telegram_chat_id": null
+  }
+]
+```
+
+#### Unsuccessful JSON response structure
+
+No custom unsuccessful response is defined for this route in the current handler. [file:2]
+
+### `GET /patients/<patient_id>`
+
+Returns one patient by ID and responds with `404` if the patient does not exist. [file:2]
+
+#### Request header
+
+None required.
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "patient_id": 3,
+  "patient_name": "John Tan",
+  "telegram_chat_id": "123456789"
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `404`
+
+```json
+{
+  "error": "Patient not found"
+}
+```
+
+### `POST /patients`
+
+Creates a new patient. This endpoint is protected and requires JSON input with `patient_name`, while `telegram_chat_id` is optional. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+```json
+{
+  "patient_name": "John Tan",
+  "telegram_chat_id": "123456789"
+}
+```
+
+#### Successful JSON response structure
+
+Status: `201`
+
+```json
+{
+  "message": "Patient created",
+  "patient_id": 3
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `415`
+
+```json
+{
+  "error": "Content-Type must be application/json"
+}
+```
+
+Status: `400`
+
+```json
+{
+  "error": "patient_name is required"
+}
+```
+
+### `POST /patients/<patient_id>/link-telegram`
+### `PATCH /patients/<patient_id>/link-telegram`
+
+Links or updates a patient’s Telegram chat ID. The Telegram bot uses this endpoint during `/start <patient_id>` linking. The Flask handler updates `telegram_chat_id` and returns `404` if the patient does not exist. [file:1][file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+```json
+{
+  "telegram_chat_id": "123456789",
+  "telegram_username": "john_example"
+}
+```
+
+The bot sends both fields, but the API currently only persists `telegram_chat_id`. [file:1][file:2]
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "message": "Telegram chat updated",
+  "patient_id": 3,
+  "telegram_chat_id": "123456789"
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `415`
+
+```json
+{
+  "error": "Content-Type must be application/json"
+}
+```
+
+Status: `404`
+
+```json
+{
+  "error": "Patient not found"
+}
+```
+
+### `GET /patients/by-telegram/<telegram_chat_id>`
+
+Looks up a patient by Telegram chat ID. The Telegram bot uses this endpoint before starting the weekly response flow. This endpoint is protected. [file:1][file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+```
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "patient_id": 3,
+  "patient_name": "John Tan",
+  "telegram_chat_id": "123456789"
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `404`
+
+```json
+{
+  "error": "Patient not found"
+}
+```
+
+## Consults
+
+### `GET /consults`
+
+Returns all consults ordered by `consult_date` descending and then `consult_id` descending. This endpoint is protected. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+```
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+[
+  {
+    "consult_id": 5,
+    "patient_id": 3,
+    "patient_name": "John Tan",
+    "attending_name": "Dr Lee",
+    "consult_date": "2026-04-19 10:30:00",
+    "raw_attending_instructions": "Original notes",
+    "ai_attending_instructions": "Summarized exercise plan",
+    "additional_attending_instructions": "Extra notes"
+  }
+]
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+### `POST /consults`
+
+Creates a consult linked to an existing patient. This endpoint requires `patient_id` and `attending_name`, while `consult_date` and the instruction fields are optional. The API loads the patient name from the `Patients` table before inserting the consult. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+```json
+{
+  "patient_id": 3,
+  "attending_name": "Dr Lee",
+  "consult_date": "2026-04-19 10:30:00",
+  "raw_attending_instructions": "Original notes from therapist",
+  "ai_attending_instructions": "Summarized exercise plan",
+  "additional_attending_instructions": "Avoid overexertion"
+}
+```
+
+#### Successful JSON response structure
+
+Status: `201`
+
+```json
+{
+  "message": "Consult created",
+  "consult_id": 5
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `415`
+
+```json
+{
+  "error": "Content-Type must be application/json"
+}
+```
+
+Status: `400`
+
+```json
+{
+  "error": "patient_id is required"
+}
+```
+
+or
+
+```json
+{
+  "error": "attending_name is required"
+}
+```
+
+Status: `404`
+
+```json
+{
+  "error": "Patient not found"
+}
+```
+
+### `GET /consults/<consult_id>`
+
+Returns one consult by ID. In the cleaned rewritten routes, this endpoint is treated as protected for consistency. It returns `404` when the consult is missing. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+```
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "consult_id": 5,
+  "patient_id": 3,
+  "patient_name": "John Tan",
+  "attending_name": "Dr Lee",
+  "consult_date": "2026-04-19 10:30:00",
+  "raw_attending_instructions": "Original notes",
+  "ai_attending_instructions": "Summarized exercise plan",
+  "additional_attending_instructions": "Extra notes"
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `404`
+
+```json
+{
+  "error": "Consult not found"
+}
+```
+
+### `GET /patients/<patient_id>/consults`
+
+Returns all consults for a specific patient, ordered newest first. The reminder sender uses this endpoint to determine which consult to use when falling back to the latest consult. [file:2][file:3]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+```
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+[
+  {
+    "consult_id": 5,
+    "patient_id": 3,
+    "patient_name": "John Tan",
+    "attending_name": "Dr Lee",
+    "consult_date": "2026-04-19 10:30:00",
+    "raw_attending_instructions": "Original notes",
+    "ai_attending_instructions": "Summarized exercise plan",
+    "additional_attending_instructions": "Extra notes"
+  }
+]
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+### `PATCH /consults/<consult_id>/instructions`
+
+Partially updates one or more instruction fields on a consult. At least one of `raw_attending_instructions`, `ai_attending_instructions`, or `additional_attending_instructions` must be present in the request body. The handler allows explicit `null` values to clear fields. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+```json
+{
+  "ai_attending_instructions": "Updated summarized instructions",
+  "additional_attending_instructions": "Updated additional notes"
+}
+```
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "message": "Consult instructions updated",
+  "consult": {
+    "consult_id": 5,
+    "patient_id": 3,
+    "patient_name": "John Tan",
+    "attending_name": "Dr Lee",
+    "consult_date": "2026-04-19 10:30:00",
+    "raw_attending_instructions": "Original notes",
+    "ai_attending_instructions": "Updated summarized instructions",
+    "additional_attending_instructions": "Updated additional notes"
+  }
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `415`
+
+```json
+{
+  "error": "Content-Type must be application/json"
+}
+```
+
+Status: `400`
+
+```json
+{
+  "error": "At least one instruction field must be provided"
+}
+```
+
+Status: `404`
+
+```json
+{
+  "error": "Consult not found"
+}
+```
+
+## Responses
+
+### `POST /responses`
+
+Creates a weekly exercise response. The Telegram bot submits to this endpoint after a patient completes the questionnaire flow. The required fields are `patient_id`, `adherence`, `difficulty_level`, `pain_level`, and `progress_perception`, while `consult_id`, `non_compliance`, `issues`, `notes`, and `response_date` are optional. [file:1][file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+```json
+{
+  "patient_id": 3,
+  "consult_id": 5,
+  "response_date": "2026-04-19 20:00:00",
+  "adherence": 5,
+  "non_compliance": null,
+  "difficulty_level": 3,
+  "pain_level": 2,
+  "progress_perception": "Better",
+  "issues": "none",
+  "notes": "Feeling better this week"
+}
+```
+
+#### Successful JSON response structure
+
+Status: `201`
+
+```json
+{
+  "message": "Response created",
+  "response_id": 10
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `415`
+
+```json
+{
+  "error": "Content-Type must be application/json"
+}
+```
+
+Status: `400`
+
+```json
+{
+  "error": "Missing required fields",
+  "missing": ["patient_id", "adherence", "difficulty_level", "pain_level", "progress_perception"]
+}
+```
+
+Status: `404`
+
+```json
+{
+  "error": "Patient not found"
+}
+```
+
+or
+
+```json
+{
+  "error": "Consult not found"
+}
+```
+
+### `GET /responses`
+
+Returns all responses ordered by `response_date` descending and then `response_id` descending. This endpoint is protected. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+```
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+[
+  {
+    "response_id": 10,
+    "patient_id": 3,
+    "consult_id": 5,
+    "response_date": "2026-04-19 20:00:00",
+    "adherence": 5,
+    "non_compliance": null,
+    "difficulty_level": 3,
+    "pain_level": 2,
+    "progress_perception": "Better",
+    "issues": "none",
+    "notes": "Feeling better this week"
+  }
+]
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+### `GET /patients/<patient_id>/responses`
+
+Returns all responses for a specific patient. The handler checks that the patient exists before returning the list. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+```
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+[
+  {
+    "response_id": 10,
+    "patient_id": 3,
+    "consult_id": 5,
+    "response_date": "2026-04-19 20:00:00",
+    "adherence": 5,
+    "non_compliance": null,
+    "difficulty_level": 3,
+    "pain_level": 2,
+    "progress_perception": "Better",
+    "issues": "none",
+    "notes": "Feeling better this week"
+  }
+]
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `404`
+
+```json
+{
+  "error": "Patient not found"
+}
+```
+
+### `GET /consults/<consult_id>/responses`
+
+Returns all responses associated with a specific consult. This consult-centric lookup is part of the cleaned rewritten route design so responses can be viewed per consult rather than only per patient. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+```
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+[
+  {
+    "response_id": 10,
+    "patient_id": 3,
+    "consult_id": 5,
+    "response_date": "2026-04-19 20:00:00",
+    "adherence": 5,
+    "non_compliance": null,
+    "difficulty_level": 3,
+    "pain_level": 2,
+    "progress_perception": "Better",
+    "issues": "none",
+    "notes": "Feeling better this week"
+  }
+]
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+### `GET /patients/<patient_id>/responses/weekly`
+
+Returns responses for the last 7 days for a given patient. This endpoint is protected. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+```
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+[
+  {
+    "response_id": 10,
+    "patient_id": 3,
+    "consult_id": 5,
+    "response_date": "2026-04-19 20:00:00",
+    "adherence": 5,
+    "non_compliance": null,
+    "difficulty_level": 3,
+    "pain_level": 2,
+    "progress_perception": "Better",
+    "issues": "none",
+    "notes": "Feeling better this week"
+  }
+]
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+### `GET /patients/<patient_id>/responses/by-week?end_date=YYYY-MM-DD`
+
+Returns responses for the 7-day window ending on `end_date`. The query parameter is required and must match `YYYY-MM-DD`. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+```
+
+#### Request body
+
+None.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "patient_id": 3,
+  "start_date": "2026-04-13",
+  "end_date": "2026-04-19",
+  "responses": [
+    {
+      "response_id": 10,
+      "patient_id": 3,
+      "consult_id": 5,
+      "response_date": "2026-04-19 20:00:00",
+      "adherence": 5,
+      "non_compliance": null,
+      "difficulty_level": 3,
+      "pain_level": 2,
+      "progress_perception": "Better",
+      "issues": "none",
+      "notes": "Feeling better this week"
+    }
+  ]
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `400`
+
+```json
+{
+  "error": "end_date query param is required in YYYY-MM-DD format"
+}
+```
+
+or
+
+```json
+{
+  "error": "Invalid end_date. Use YYYY-MM-DD"
+}
+```
+
+## Internal Telegram trigger endpoints
+
+### `POST /internal/send-response-reminders`
+
+Triggers Telegram weekly response reminders for all linked patients by calling the bulk reminder helper. This endpoint is protected. [file:2][file:3]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+None required. Sending `{}` is acceptable.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "message": "Response reminders sent"
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `500`
+
+```json
+{
+  "error": "Failed to send response reminders",
+  "detail": "..."
+}
+```
+
+### `POST /internal/patients/<patient_id>/send-response-reminders`
+
+Triggers a Telegram response reminder for one patient. In the cleaned rewritten design, this endpoint can accept an optional `consult_id` in the JSON body so the reminder can ask the patient to reply with a consult-specific weekly command. [file:2][file:3]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+```json
+{
+  "consult_id": 5
+}
+```
+
+The body may also be empty if the reminder does not need to target a specific consult. [file:2]
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "message": "Response reminder sent",
+  "patient_id": 3,
+  "consult_id": 5
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `500`
+
+```json
+{
+  "error": "Failed to send response reminder",
+  "detail": "..."
+}
+```
+
+### `POST /internal/send-latest-instructions`
+
+Triggers Telegram instruction sends for all linked patients using the latest consult per patient. The sender fetches patient consults and uses the newest consult when no explicit consult ID is supplied. [file:2][file:3]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+None required. Sending `{}` is acceptable.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "message": "Latest instructions sent"
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `500`
+
+```json
+{
+  "error": "Failed to send latest instructions",
+  "detail": "..."
+}
+```
+
+### `POST /internal/patients/<patient_id>/send-instructions`
+
+Triggers a Telegram instruction send for a single patient. In the cleaned rewritten design, the JSON body can include `consult_id` so a specific consult is used instead of automatically falling back to the latest consult. [file:2][file:3]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+```json
+{
+  "consult_id": 5
+}
+```
+
+The body may also be empty if the latest consult should be used. [file:2]
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "message": "Instructions sent",
+  "patient_id": 3,
+  "consult_id": 5
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `500`
+
+```json
+{
+  "error": "Failed to send instructions",
+  "detail": "..."
+}
+```
+
+### `POST /internal/consults/<consult_id>/send-instructions`
+
+Triggers a Telegram instruction send directly from a consult ID. The endpoint first looks up the consult, then uses its linked `patient_id` to send the consult-specific instruction message. This is the cleanest internal route when Workato already has the consult record. [file:2]
+
+#### Request header
+
+```http
+X-API-KEY: <your-api-key>
+Content-Type: application/json
+```
+
+#### Request body
+
+None required. Sending `{}` is acceptable.
+
+#### Successful JSON response structure
+
+Status: `200`
+
+```json
+{
+  "message": "Instructions sent",
+  "consult_id": 5,
+  "patient_id": 3
+}
+```
+
+#### Unsuccessful JSON response structure
+
+Status: `401`
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+Status: `404`
+
+```json
+{
+  "error": "Consult not found"
+}
+```
+
+Status: `500`
+
+```json
+{
+  "error": "Failed to send instructions",
+  "detail": "..."
+}
+```
+
+## Telegram bot integration notes
+
+The Telegram bot links a patient via `/patients/<patient_id>/link-telegram`, looks up the patient through `/patients/by-telegram/<chat_id>`, and submits weekly answers to `/responses` once the questionnaire is completed. In the cleaned rewritten design, the bot can also carry `consult_id` through the weekly response flow so responses are tied to a specific consult instead of only a patient. [file:1][file:2]
